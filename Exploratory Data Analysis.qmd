@@ -1,0 +1,1944 @@
+---
+title: "Exploratory Data Analysis"
+format: html
+editor: visual
+---
+
+(Optional) Package installations
+
+```{r}
+#| label: package install
+#| warning: false
+#| include: false
+
+install.packages("tidyr")
+install.packages("tidyverse")
+install.packages("ggsoccer")
+```
+
+# Preprocessing
+
+-   Unexpand
+
+-   Removing NAs
+
+```{r}
+library(tidyr)
+library(tidyverse)
+library(ggsoccer)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(ggrepel)
+
+# Read in full data set
+pass360full <- readRDS("pass360full.rds")
+
+# Passes that are from open play (no pressure in set pieces)
+open_play_passes <- pass360full %>% 
+  filter(play_pattern.name == "Regular Play" | play_pattern.name == "Other" | play_pattern.name == "From Counter" | play_pattern.name == "From Keeper")
+
+# Data set with single open play passes (where the passer is the actor)
+openplay_single =  open_play_passes %>% 
+  filter(actor == TRUE, .keep_all = TRUE)
+
+# Change NA pass outcome to complete
+open_play_passes <- open_play_passes %>%
+  mutate(pass.outcome.name = replace_na(pass.outcome.name, "Complete"))
+
+openplay_single <- openplay_single %>%
+  mutate(pass.outcome.name = replace_na(pass.outcome.name, "Complete"))
+
+####################
+# REMOVE NA Columns
+###################
+
+#Cannot remove player ID because that is the only true identifier for a player
+cols_to_remove <- c("type.name", "type.id", "tactics.lineup", "under_pressure", "out",
+                    "off_camera", "counterpress", "pass.switch", "pass.cross",
+                    "pass.assisted_shot_id", "pass.shot_assist", "pass.aerial_won",
+                    "pass.through_ball", "pass.outswinging", "pass.deflected",
+                    "pass.no_touch", "pass.inswinging", "pass.goal_assist",
+                    "pass.technique.id", "pass.technique.name", "carry.end_location",
+                    "shot.end_location", "shot.freeze_frame", "goalkeeper.end_location",
+                    "pass.cut_back", "pass.straight", "pass.miscommunication", "pass.recipient.name")
+
+openplay_single <- openplay_single %>%
+  select(-any_of(cols_to_remove))
+open_play_passes <- open_play_passes %>%
+  select(-any_of(cols_to_remove))
+
+# Unexpand passes
+pass_single =  pass360full %>% distinct(id, .keep_all = TRUE)
+
+#Fix Bundesliga 
+pass_single <- pass_single %>%
+  mutate(
+    competition_name = if_else(
+      competition_name == "1. Bundesliga",
+      "Bundesliga",
+      competition_name
+    )
+  )
+
+#Fix Bundesliga 
+openplay_single <- openplay_single %>%
+  mutate(
+    competition_name = if_else(
+      competition_name == "1. Bundesliga",
+      "Bundesliga",
+      competition_name
+    )
+  )
+```
+
+# Feature Engineering
+
+### Condense into 4-3-3 formation
+
+-   Center back will be assigned dynamically depending where they spend the majority of their time
+
+-   Centre Midfield and Centre Attacking Midfield will be assigned the same way
+
+```{r}
+#| label: New Positions
+#######################################
+# Condense singles into 11 positions 
+#######################################
+openplay_single <- openplay_single %>%
+  group_by(player.id) %>%
+  mutate(
+    avg_y = mean(players_y[position.name %in% c("Center Back", "Center Midfield", "Center Attacking Midfield")], na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  
+  mutate(position_group = case_when(
+    position.name == "Goalkeeper" ~ "Goalkeeper",
+
+    position.name == "Left Center Back" ~ "Left Center Back",
+    position.name == "Right Center Back" ~ "Right Center Back",
+    
+    position.name == "Center Back" ~ 
+      if_else(!is.na(avg_y) & avg_y < 40, "Left Center Back", "Right Center Back"),
+    
+    position.name %in% c("Left Back", "Left Wing Back") ~ "Left Back",
+    position.name %in% c("Right Back", "Right Wing Back") ~ "Right Back",
+    
+    position.name %in% c(
+      "Left Defensive Midfield",
+      "Center Defensive Midfield",
+      "Right Defensive Midfield"
+    ) ~ "Defensive Midfield",
+    
+    position.name %in% c(
+      "Right Center Midfield",
+      "Right Midfield",
+      "Right Attacking Midfield"
+    ) ~ "Right Central Midfield",
+    
+    position.name %in% c(
+      "Left Center Midfield",
+      "Left Midfield",
+      "Left Attacking Midfield"
+    ) ~ "Left Central Midfield",
+    
+    position.name %in% c("Center Midfield", "Center Attacking Midfield") ~ 
+      if_else(!is.na(avg_y) & avg_y < 40, "Left Central Midfield", "Right Central Midfield"),
+    
+    position.name == "Left Wing" ~ "Left Wing",
+    position.name == "Right Wing" ~ "Right Wing",
+    
+    position.name %in% c(
+      "Left Center Forward",
+      "Center Forward",
+      "Right Center Forward"
+    ) ~ "Striker",
+    
+    TRUE ~ position.name
+  )) %>%
+  select(-avg_y)
+
+
+###################################################
+# Condense freeze frame positions into 11 positions 
+##################################################
+open_play_passes <- open_play_passes %>%
+  group_by(player.id) %>%
+  mutate(
+    avg_y = mean(players_y[position.name %in% c("Center Back", "Center Midfield", "Center Attacking Midfield")], na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  
+  mutate(position_group = case_when(
+    position.name == "Goalkeeper" ~ "Goalkeeper",
+    
+    position.name == "Left Center Back" ~ "Left Center Back",
+    position.name == "Right Center Back" ~ "Right Center Back",
+    
+    position.name == "Center Back" ~ 
+      if_else(!is.na(avg_y) & avg_y < 40, "Left Center Back", "Right Center Back"),
+    
+    position.name %in% c("Left Back", "Left Wing Back") ~ "Left Back",
+    position.name %in% c("Right Back", "Right Wing Back") ~ "Right Back",
+    
+    position.name %in% c(
+      "Left Defensive Midfield",
+      "Center Defensive Midfield",
+      "Right Defensive Midfield"
+    ) ~ "Defensive Midfield",
+    
+    position.name %in% c(
+      "Right Center Midfield",
+      "Right Midfield",
+      "Right Attacking Midfield"
+    ) ~ "Right Central Midfield",
+    
+    position.name %in% c(
+      "Left Center Midfield",
+      "Left Midfield",
+      "Left Attacking Midfield"
+    ) ~ "Left Central Midfield",
+    
+    position.name %in% c("Center Midfield", "Center Attacking Midfield") ~ 
+      if_else(!is.na(avg_y) & avg_y < 40, "Left Central Midfield", "Right Central Midfield"),
+    
+    position.name == "Left Wing" ~ "Left Wing",
+    position.name == "Right Wing" ~ "Right Wing",
+    
+    position.name %in% c(
+      "Left Center Forward",
+      "Center Forward",
+      "Right Center Forward"
+    ) ~ "Striker",
+    
+    TRUE ~ position.name
+  )) %>%
+  select(-avg_y)
+```
+
+```{r}
+#| label: In frame
+#| warning: false
+########################################################
+### To check if the end location is in the visbile area
+#################################################
+library(sp) 
+library(purrr)
+
+is_in_visible_area <- function(visible_area, end_x, end_y) {
+  if (is.null(visible_area) || length(visible_area) < 6 || is.na(end_x) || is.na(end_y)) {
+    return(NA)
+  }
+  
+  # split flat vector into x's (odd indices) and y's (even indices)
+  xs <- visible_area[seq(1, length(visible_area), by = 2)]
+  ys <- visible_area[seq(2, length(visible_area), by = 2)]
+  
+  result <- point.in.polygon(end_x, end_y, xs, ys)
+  result > 0  # 0 = outside, 1 = inside, 2/3 = on edge/vertex
+}
+
+openplay_single <- openplay_single %>%
+  mutate(
+    end_in_visible_area = pmap_lgl(
+      list(visible_area, pass_end_x, pass_end_y),
+      is_in_visible_area
+    )
+  )
+open_play_passes <- open_play_passes %>%
+  mutate(
+    end_in_visible_area = pmap_lgl(
+      list(visible_area, pass_end_x, pass_end_y),
+      is_in_visible_area
+    )
+  )
+```
+
+```{r}
+#| label: Pass distance, angle, transition, gametime 
+
+openplay_single = openplay_single %>%
+  # Categorical distance (short, medium, long)
+  mutate(distance = case_when(
+    pass.length < 15 ~ "Short",
+    pass.length >= 15 & pass.length < 30 ~ "Medium",
+    pass.length >= 30 ~ "Long",
+    TRUE ~ NA_character_
+  ),
+  # Categorical direction (Backwards, Sideways, Forwards)
+  direction = case_when(
+    abs(pass.angle) <= pi/2 ~ "Forwards",
+    abs(pass.angle) > 0.75*pi ~ "Backwards",
+    TRUE ~ "Sideways"
+  ),
+  # Categorical Gametime (1st, 2nd, 3rd, 4th, ET1, ET2)
+  quarter = case_when(
+    period == 1 & minute < 23  ~ "Q1",
+    period == 1 & minute >= 23 ~ "Q2",
+    period == 2 & minute < 68  ~ "Q3",   # second half starts ~45, so midpoint ~67-68
+    period == 2 & minute >= 68 ~ "Q4",
+    period == 3               ~ "ET1",   # first extra-time half
+    period == 4               ~ "ET2",   # second extra-time half
+    TRUE ~ NA_character_
+  ),
+  # Categorical space transition (Defence, Mid, Attack)
+  transition = case_when(
+    players_x < 40 & pass_end_x < 40 ~ "Defence - Defence",
+    players_x < 40 & pass_end_x >= 40 & pass_end_x < 80 ~ "Defence - Mid",
+    players_x < 40 & pass_end_x >= 80 ~ "Defence - Attack",          # long ball forward
+    players_x >= 40 & players_x < 80 & pass_end_x < 40 ~ "Mid - Defence",   # back pass
+    players_x >= 40 & players_x < 80 & pass_end_x >= 40 & pass_end_x < 80 ~ "Mid - Mid",
+    players_x >= 40 & players_x < 80 & pass_end_x >= 80 ~ "Mid - Attack",
+    players_x >= 80 & pass_end_x < 40 ~ "Attack - Defence",          # long ball back
+    players_x >= 80 & pass_end_x >= 40 & pass_end_x < 80 ~ "Attack - Mid",  # back pass
+    players_x >= 80 & pass_end_x >= 80 ~ "Attack - Attack",
+    TRUE ~ NA_character_
+  )
+  )
+```
+
+## Voronoi Areas
+
+```{r}
+
+# Group by id 
+# Compute Vor object for pass event using deldir
+# Obtain tile list using tile.list
+# 
+
+# Join in openplay_single using player_id
+tile.list(deldir((open_play_passes$players_x)[1:16], (open_play_passes$players_y)[1:16], rw = c(0, 120, 0, 80)))$pt.3$area
+```
+
+# Exploratory Data Analysis
+
+-   Number of passes, percentage of successful passes, competition, season
+
+## Position Analysis
+
+```{r}
+position_counts = open_play_passes %>%
+  group_by(Position = position_group) %>%
+  summarise(
+    Number_of_players = n_distinct(player.name),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Number_of_players))
+
+position_table = kable(
+  position_counts,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Number of players in each position",
+  label = "position_counts"
+)%>%
+  kable_styling(
+    latex_options = "hold_position"
+  )
+
+cat(position_table)
+```
+
+## Pass completion analysis
+
+### Open Play
+
+Analysing pass completion segmented by:
+
+Distance: Short (\<15m), medium (\<30m), long (\>30m)
+
+Angle: Forwards (0-45), sideways (45-135), backwards (135-180)
+
+Height: Ground, Low, High
+
+Sector: Defence, Mid, Final third
+
+Game context: home/away, losing/leading (don't have this in pass data), can do game time in quarters
+
+```{r}
+#| label: Passing accuracy
+#| warning: false
+
+summary_table = openplay_single %>% 
+  mutate(distance = case_when(
+    pass.length < 15 ~ "Short",
+    pass.length >= 15 & pass.length < 30 ~ "Medium",
+    pass.length >= 30 ~ "Long",
+    TRUE ~ NA_character_
+  ),
+  angle = case_when(
+    abs(pass.angle) <= pi/2 ~ "Forwards",
+    abs(pass.angle) > 0.75*pi ~ "Backwards",
+    TRUE ~ "Sideways"
+  ),
+  sector = case_when(
+    players_x < 40 & pass_end_x < 40 ~ "Defence-Defence",
+    players_x < 40 & (pass_end_x >= 40 & pass_end_x < 80) ~ "Defence - Mid",
+    players_x >= 40 & players_x < 80 & pass_end_x >= 40 & pass_end_x < 80 ~ "Mid - Mid",
+    players_x >= 40 & players_x < 80 & pass_end_x >= 80 ~ "Mid - Attack",
+    TRUE ~ "Attack - Attack"
+  )
+  )
+
+make_summary <- function(data, group_var) {
+  data %>%
+    group_by(category = {{ group_var }}) %>%
+    summarise(
+      Total = n(),
+      Successful = sum(pass.outcome.name == "Complete", na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      Proportion = round(100 * Total / nrow(data), 2),
+      Percentage = round(100 * Successful / Total, 2)
+    ) %>%
+    relocate(Proportion, .after = Total)
+}
+
+df <- summary_table %>%
+  summarise(category = "All Passes", Total = n(),
+            Successful = sum(pass.outcome.name == "Complete", na.rm = TRUE)) %>%
+  mutate(Proportion = round(100 * Total / nrow(summary_table), 2),
+         Percentage = round(100 * Successful / Total, 2)) %>% 
+  relocate(Proportion, .after = Total)
+
+
+distance_tbl <- make_summary(summary_table, distance) %>% 
+  arrange(desc(Percentage))
+direction_tbl    <- make_summary(summary_table, angle) %>% 
+  arrange(desc(Percentage))
+transition_tbl   <- make_summary(summary_table, sector) %>% 
+  arrange(desc(Percentage))
+height_tbl <- make_summary(summary_table, pass.height.name) %>% 
+  arrange(desc(Percentage))
+
+final_summary_table <- bind_rows(df, direction_tbl, distance_tbl,height_tbl, transition_tbl)
+
+printtable = kable(
+  final_summary_table,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Passing Accuracy",
+  label = "position_counts"
+)
+cat(printtable)
+
+quarter_tbl <- make_summary(summary_table, quarter)
+quarter_table <- bind_rows(df, quarter_tbl)
+printquarter = kable(
+  quarter_table,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Passing Accuracy per Quarter",
+  label = "position_counts"
+)
+cat(printquarter)
+```
+
+```{r}
+#| label: rankings
+
+###########################################
+# Table of passing frequencies and accuracy
+############################################
+tot_pass_accuracies <- openplay_single %>%
+  group_by(player.id, position_group) %>%
+  summarise(
+    Total = n(),
+    Successful = sum(pass.outcome.name == "Complete", na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(Accuracy = round(100 * Successful / Total, 2)) %>% 
+  select(-Successful)
+
+################################
+# Top player computations
+#################################
+top5_frequency <- tot_pass_accuracies %>%
+  arrange(desc(Total)) %>%
+  slice_head(n = 5)
+
+top5_frequency_kable = kable(
+  top5_frequency,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Top 5 Overall Passing Frequency",
+  label = "top5Overall_pass_freq"
+)
+cat(top5_frequency_kable)
+
+top5_accuracy_min300 <- tot_pass_accuracies %>%
+  filter(Total >= 286) %>%
+  arrange(desc(Accuracy)) %>%
+  slice_head(n = 5)
+top5_accuracy_kable = kable(
+  top5_accuracy_min300,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Top 5 Overall Passing Accuracy",
+  label = "top5Overall_pass_acc"
+)
+cat(top5_accuracy_kable)
+
+top5_frequency
+# Xhaka, Tah, Wirtz, Palacios, Tapsoba
+top5_accuracy_min300
+# Christensen, Tah, Rodri, Laporte, Ruben Dias
+
+#####################
+# Per position plots
+#####################
+# top3_position <- tot_pass_accuracies %>%
+#   filter(Total >= 140, position_group != "Goalkeeper") %>%       
+#   group_by(position_group) %>%
+#   slice_max(Accuracy, n = 3, with_ties = FALSE) %>%
+#   ungroup() %>% 
+#   arrange(desc(Accuracy)) %>%
+#   mutate(rank = row_number()) # unique y position per player, ordered by Accuracy
+# 
+# ggplot(top3_position,
+#        aes(x = Total, y = Accuracy, colour = position_group)) +
+#   geom_point(size = 2) +
+#   geom_text_repel(
+#     aes(label = player.id),
+#     size = 3,
+#     show.legend = FALSE,
+#     box.padding = 0.3,
+#     max.overlaps = Inf
+#   ) +
+#   scale_colour_brewer(palette = "Dark2") +
+#   labs(
+#     x = "Total Passes",
+#     y = "Passing Accuracy (%)",
+#     colour = "Position",
+#     title = "Passing Accuracy vs. Volume by Position"
+#   ) +
+#   theme_minimal(base_size = 12) +
+#   theme(
+#     panel.grid.minor = element_blank()
+#   )
+
+top10_position <- tot_pass_accuracies %>%
+  filter(Total >= 140, position_group != "Goalkeeper", player.id != 3500) %>%       
+  group_by(position_group) %>%
+  slice_max(Accuracy, n = 10, with_ties = FALSE) %>%
+  ungroup() %>% 
+  arrange(desc(Accuracy)) %>%
+  mutate(rank = row_number()) # unique y position per player, ordered by Accuracy
+
+ggplot(top10_position,
+       aes(x = Total, y = Accuracy, colour = position_group)) +
+  geom_point(size = 2) +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(
+    x = "Total Passes",
+    y = "Passing Accuracy (%)",
+    colour = "Position",
+    title = "Passing Accuracy vs. Volume by Position"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank()
+  )
+```
+
+### All Passes or Set Pieces
+
+```{r}
+
+```
+
+## Competition Analysis
+
+### Competition Passes Table (All Passes)
+
+-   Passes along with the competiton, season name, number of passes, average number of passes per match
+
+```{r}
+pass_summary = openplay_single %>% group_by(Competition = competition_name,Season = season_name,) %>% 
+  summarise(
+    Total = n(),
+    Matches = n_distinct(match_id),
+    Passes_per_match = round(Total / Matches, 2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Passes_per_match))
+
+pass_summary
+
+pass_table <- kable(
+  pass_summary,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Number of passes by season and competition (Open)",
+  label = "tab:pass_summary",
+  longtable = TRUE
+) %>%
+  kable_styling(
+    latex_options = "hold_position"
+  )
+
+cat(pass_table)
+```
+
+### Open Play
+
+```{r}
+pass_summary = openplay_single %>% group_by(Competition = competition_name,Season = season_name,) %>% 
+  summarise(
+     Total = n(),
+    Matches = n_distinct(match_id),
+    Passes_per_match = round(Total / Matches, 2),
+    Successful = sum(pass.outcome.name == "Complete", na.rm = TRUE),
+    .groups = "drop"
+  )  |>  mutate(Percentage = round(100 * Successful / Total, 2)) |> 
+  arrange(desc(Passes_per_match))
+
+pass_summary
+
+pass_table <- kable(
+  pass_summary,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Number of passes by season and competition(Open Play)",
+  label = "tab:pass_summary",
+  longtable = TRUE
+)
+
+cat(pass_table)
+```
+
+### Seperate into positions
+
+#### Pass Completion by position
+
+```{r}
+position_summary = openplay_single %>% group_by(Position = position_group) %>% 
+  summarise(
+    Total = n(),
+    Matches = n_distinct(match_id),
+    Passes_per_match = round(Total / Matches, 2),
+    Successful = sum(pass.outcome.name == "Complete", na.rm = TRUE),
+    .groups = "drop"
+  )  |>  mutate(Percentage = round(100 * Successful / Total, 2)) |> 
+  arrange(desc(Passes_per_match))
+
+position_summary
+
+position_table <- kable(
+  head(position_summary,11),
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Number of passes by position",
+  label = "tab:position_summary",
+  longtable = TRUE
+)
+
+cat(position_table)
+```
+
+### Separating Passes into competitions
+
+#### Bundesliga
+
+```{r}
+#Bundesliga 2023/2024
+bund_2324 = subset(openplay_single, competition_name == "Bundesliga")
+
+bund_summary <- bund_2324 %>%
+  group_by(
+    Position = position.name
+  ) %>%
+  summarise(
+    Total = n(),
+    Matches = n_distinct(match_id),
+    Passes_per_match = round(Total / Matches, 2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Total))
+
+bund_table <- kable(
+  bund_summary,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Number of passes by position in the Bundesliga 2023/24",
+  label = "tab:bund_table",
+  longtable = TRUE
+)
+
+cat(bund_table)
+```
+
+#### Fifa World Cup 2022
+
+```{r}
+#Fifa World Cup 2022
+wc_2022 = subset(openplay_single, competition_name == "FIFA World Cup")
+
+wc_2022_summary <- wc_2022 %>%
+  group_by(
+    PlayerID = player.id,
+    Position = position.name
+  ) %>%
+  summarise(
+    Total = n(),
+    Matches = n_distinct(match_id),
+    Passes_per_match = round(Total / Matches, 2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Total))
+
+wc_2022_table <- kable(
+  bund_summary,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Number of passes by position in the Fifa World Cup 2022",
+  label = "tab:wc_2022_table",
+  longtable = TRUE
+)
+
+writeLines(wc_2022_table, "wc_2022_table.tex")
+```
+
+```{r}
+#UEFA Euro 2020
+euro_2020 = subset(pass_single,competition_name == "UEFA Euro" & season_name=="2020")
+
+#UEFA Euro 2024
+euro_2024 = subset(pass_single,competition_name == "UEFA Euro" & season_name=="2024")
+
+#UEFA Women's Euro 2022
+euro_w_2022 = subset(pass_single,competition_name == "UEFA Women's Euro" & season_name=="2022")
+
+#UEFA Women's Euro 2025
+euro_w_2025 = subset(pass_single,competition_name == "UEFA Women's Euro" & season_name=="2025")
+
+#Womans World Cup 2023
+wc_w_2023 = subset(pass_single,competition_name == "Women's World Cup")
+```
+
+## Heatmaps
+
+-   Segmented by competition and season
+
+### Heatmap of pass completion
+
+```{r}
+
+```
+
+### Heatmaps segmented by position
+
+#### Centre Backs (Open Play Passes)
+
+```{r}
+centre_back_data = openplay_single %>% filter(grepl("Center Back", position.name))
+
+pass_data = data.frame(
+  x = centre_back_data$players_x,
+  y =  centre_back_data$players_y
+)
+
+
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  geom_bin2d(
+    binwidth = c(5, 5),
+    alpha = 0.85
+  ) +
+  scale_fill_gradient(
+    low = "yellow", 
+    high = "red",
+    name = "Pass Count"
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80)) +
+  theme_pitch() +
+  labs(
+    title = "Pass Heatmap for Centre Backs",
+    subtitle = "Segmented into 5 by 5 metre squares"
+  ) 
+
+range(pass_data$x)
+range(pass_data$y)
+```
+
+#### Centre Backs Heatmap
+
+```{r}
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  stat_density2d(
+    aes(fill = ..level..), 
+    geom = "polygon", 
+    alpha = 0.3, 
+    bins = 20,
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80))+
+  scale_fill_gradient(low = "yellow", high = "red",name = "Pass Density") +
+  theme_pitch() +
+  labs(title = "Pass Heatmap Centre Backs (Open Play)") +
+  scale_x_continuous(
+  limits = c(0, 120),
+  breaks = seq(0, 120, 20)
+) +
+scale_y_continuous(
+  limits = c(0, 80),
+  breaks = seq(0, 80, 10)
+)
+```
+
+#### Wing Backs Grid
+
+```{r}
+wing_back_data = openplay_single %>% filter(grepl("Wing Back", position.name))
+
+pass_data = data.frame(
+  x = wing_back_data$players_x,
+  y =  wing_back_data$players_y
+)
+
+
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  geom_bin2d(
+    binwidth = c(5, 5),
+    alpha = 0.85
+  ) +
+  scale_fill_gradient(
+    low = "yellow", 
+    high = "red",
+    name = "Pass Count"
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80)) +
+  theme_pitch() +
+  labs(
+    title = "Pass Heatmap for Wing Backs",
+    subtitle = "Segmented into 5 by 5 metre squares"
+  ) 
+```
+
+#### Wingback Heatmap
+
+```{r}
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  stat_density2d(
+    aes(fill = ..level..), 
+    geom = "polygon", 
+    alpha = 0.3, 
+    bins = 20,
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80))+
+  scale_fill_gradient(low = "yellow", high = "red",name = "Pass Density") +
+  theme_pitch() +
+  labs(title = "Pass Heatmap Left and right wing backs (Open Play)") +
+  scale_x_continuous(
+  limits = c(0, 120),
+  breaks = seq(0, 120, 20)
+) +
+scale_y_continuous(
+  limits = c(0, 80),
+  breaks = seq(0, 80, 10)
+)
+```
+
+### Left/Right Backs (Grid)
+
+```{r}
+back_data = openplay_single %>% filter(position.name == "Left Back" |position.name == "Right Back") 
+
+pass_data = data.frame(
+  x = back_data$players_x,
+  y =  back_data$players_y
+)
+
+
+ggplot(pass_data, aes(x = x, y = y)) +
+ annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  geom_bin2d(
+    binwidth = c(5, 5),
+    alpha = 0.85
+  ) +
+  scale_fill_gradient(
+    low = "yellow", 
+    high = "red",
+    name = "Pass Count"
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80)) +
+  theme_pitch() +
+  labs(
+    title = "Pass Heatmap for Left and Right Backs",
+    subtitle = "Segmented into 5 by 5 metre squares"
+  ) 
+```
+
+#### Left/Right Backs Heatmap
+
+```{r}
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  stat_density2d(
+    aes(fill = ..level..), 
+    geom = "polygon", 
+    alpha = 0.3, 
+    bins = 20,
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80))+
+  scale_fill_gradient(low = "yellow", high = "red",name = "Pass Density") +
+  theme_pitch() +
+  labs(title = "Pass Heatmap Left and Right Backs (Open Play)") +
+  scale_x_continuous(
+  limits = c(0, 120),
+  breaks = seq(0, 120, 20)
+) +
+scale_y_continuous(
+  limits = c(0, 80),
+  breaks = seq(0, 80, 10)
+)
+```
+
+#### Midfielders (Grid)
+
+```{r}
+midfield_data = openplay_single %>% filter(grepl("Midfield", position.name))
+
+pass_data = data.frame(
+  x =midfield_data$players_x,
+  y =midfield_data$players_y
+)
+
+
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  geom_bin2d(
+    binwidth = c(5, 5),
+    alpha = 0.85
+  ) +
+  scale_fill_gradient(
+    low = "yellow", 
+    high = "red",
+    name = "Pass Count"
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80)) +
+  theme_pitch() +
+  labs(
+    title = "Pass Heatmap for Midfielders",
+    subtitle = "Segmented into 5 by 5 metre squares"
+  ) 
+```
+
+#### Midfielders (Heatmap)
+
+```{r}
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  stat_density2d(
+    aes(fill = ..level..), 
+    geom = "polygon", 
+    alpha = 0.3, 
+    bins = 20,
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80))+
+  scale_fill_gradient(low = "yellow", high = "red",name = "Pass Density") +
+  theme_pitch() +
+  labs(title = "Pass Heatmap Midfielders (Open Play)") +
+  scale_x_continuous(
+  limits = c(0, 120),
+  breaks = seq(0, 120, 20)
+) +
+scale_y_continuous(
+  limits = c(0, 80),
+  breaks = seq(0, 80, 10)
+)
+```
+
+#### Wingers (Grid)
+
+```{r}
+wing_data = openplay_single %>% filter(position.name == "Left Wing" |position.name == "Right Wing") 
+
+pass_data = data.frame(
+  x = wing_data$players_x,
+  y =  wing_data$players_y
+)
+
+
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  geom_bin2d(
+    binwidth = c(5, 5),
+    alpha = 0.85
+  ) +
+  scale_fill_gradient(
+    low = "yellow", 
+    high = "red",
+    name = "Pass Count"
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80)) +
+  theme_pitch() +
+  labs(
+    title = "Pass Heatmap for Left and Right Wings",
+    subtitle = "Segmented into 5 by 5 metre squares"
+  ) 
+```
+
+#### Wingers (Heatmap)
+
+```{r}
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  stat_density2d(
+    aes(fill = ..level..), 
+    geom = "polygon", 
+    alpha = 0.3, 
+    bins = 20,
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80))+
+  scale_fill_gradient(low = "yellow", high = "red",name = "Pass Density") +
+  theme_pitch() +
+  labs(title = "Pass Heatmap Wingers (Open Play)") +
+  scale_x_continuous(
+  limits = c(0, 120),
+  breaks = seq(0, 120, 20)
+) +
+scale_y_continuous(
+  limits = c(0, 80),
+  breaks = seq(0, 80, 10)
+)
+```
+
+#### Forwards (Grid)
+
+```{r}
+forward_data = openplay_single %>% filter(grepl("Forward", position.name))
+
+pass_data = data.frame(
+  x =forward_data$players_x,
+  y =forward_data$players_y
+)
+
+
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  geom_bin2d(
+    binwidth = c(5, 5),
+    alpha = 0.85
+  ) +
+  scale_fill_gradient(
+    low = "yellow", 
+    high = "red",
+    name = "Pass Count"
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80)) +
+  theme_pitch() +
+  labs(
+    title = "Pass Heatmap for Forwards",
+    subtitle = "Segmented into 5 by 5 metre squares"
+  ) 
+```
+
+#### Forwards (Heatmap)
+
+```{r}
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  stat_density2d(
+    aes(fill = ..level..), 
+    geom = "polygon", 
+    alpha = 0.3, 
+    bins = 15,
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80))+
+  scale_fill_gradient(low = "yellow", high = "red",name = "Pass Density") +
+  theme_pitch() +
+  labs(title = "Pass Heatmap Strikers (Open Play)") +
+  scale_x_continuous(
+  limits = c(0, 120),
+  breaks = seq(0, 120, 20)
+) +
+scale_y_continuous(
+  limits = c(0, 80),
+  breaks = seq(0, 80, 10)
+)
+```
+
+#### Goalkeeper (Grid)
+
+```{r}
+goalkeeper_data = openplay_single %>% filter(grepl("Goalkeeper", position.name))
+
+pass_data = data.frame(
+  x =goalkeeper_data$players_x,
+  y =goalkeeper_data$players_y
+)
+
+
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  geom_bin2d(
+    binwidth = c(5, 5),
+    alpha = 0.85
+  ) +
+  scale_fill_gradient(
+    low = "yellow", 
+    high = "red",
+    name = "Pass Count"
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80)) +
+  theme_pitch() +
+  labs(
+    title = "Pass Heatmap for Goalkeepers",
+    subtitle = "Segmented into 5 by 5 metre squares"
+  ) 
+```
+
+#### Goalkeeper Heatmap
+
+```{r}
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  stat_density2d(
+    aes(fill = ..level..), 
+    geom = "polygon", 
+    alpha = 0.3, 
+    bins = 15,
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80))+
+  scale_fill_gradient(low = "yellow", high = "red",name = "Pass Density") +
+  theme_pitch() +
+  labs(title = "Pass Heatmap Goalkeepers (Open Play)") +
+  scale_x_continuous(
+  limits = c(0, 120),
+  breaks = seq(0, 120, 20)
+) +
+scale_y_continuous(
+  limits = c(0, 80),
+  breaks = seq(0, 80, 10)
+)
+```
+
+### Heatmap of pass frequency for all open play passes
+
+```{r}
+pass_data = data.frame(
+  x =openplay_single$players_x,
+  y =openplay_single$players_y
+)
+
+
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  stat_density2d(
+    aes(fill = ..level..), 
+    geom = "polygon", 
+    alpha = 0.3, 
+    bins = 15,
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80))+
+  scale_fill_gradient(low = "yellow", high = "red",name = "Pass Density") +
+  theme_pitch() +
+  labs(title = "Pass Heatmap All Positions (Open Play)") +
+  scale_x_continuous(
+  limits = c(0, 120),
+  breaks = seq(0, 120, 20)
+) +
+scale_y_continuous(
+  limits = c(0, 80),
+  breaks = seq(0, 80, 10)
+)
+
+
+
+```
+
+### Heatmap as grid
+
+```{r}
+pass_data <- data.frame(
+  x = openplay_single$players_x,
+  y = openplay_single$players_y
+)
+
+ggplot(pass_data, aes(x = x, y = y)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    colour = "white",
+    fill = "springgreen4",
+    limits = F,
+    alpha = 1
+  ) +
+  geom_bin2d(
+    binwidth = c(5, 5),
+    alpha = 0.85
+  ) +
+  scale_fill_gradient(
+    low = "yellow", 
+    high = "red",
+    name = "Pass Count"
+  ) +
+  coord_cartesian(xlim = c(0, 120), ylim = c(0, 80)) +
+  theme_pitch() +
+  labs(
+    title = "Pass Heatmap (Grid)",
+    subtitle = "Segmented into 5 by 5 metre squares"
+  ) 
+```
+
+## Distributions
+
+-   When a pass has NA as the outcome, it was completed
+
+### Distribution of Pass Outcomes
+
+-   Segmented into different games and different leagues
+
+#### Distribution of Pass Outcomes Open Play
+
+```{r}
+
+pie_data <- openplay_single %>%
+  mutate(outcome = ifelse(is.na(pass.outcome.name), "Complete", pass.outcome.name)) %>%
+  count(outcome)
+
+# 2. Build the Pie Chart
+ggplot(pie_data, aes(x = "", y = n, fill = outcome)) +
+  # Create a stacked bar chart first
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  # Convert the bar chart into a pie chart circle
+  coord_polar("y", start = 0) +
+  # Clean up the theme (removes gridlines and axis ticks)
+  theme_void() + 
+  labs(
+    title = "Pass Outcomes Distribution (Open Play)",
+    fill = "Outcome"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.title = element_text(face = "bold")
+  )
+
+
+```
+
+#### Distribution of Pass Outcomes All Passes
+
+```{r}
+pie_data <- pass_single %>%
+  mutate(outcome = ifelse(is.na(pass.outcome.name), "Complete", pass.outcome.name)) %>%
+  count(outcome)
+
+# 2. Build the Pie Chart
+ggplot(pie_data, aes(x = "", y = n, fill = outcome)) +
+  # Create a stacked bar chart first
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  # Convert the bar chart into a pie chart circle
+  coord_polar("y", start = 0) +
+  # Clean up the theme (removes gridlines and axis ticks)
+  theme_void() + 
+  labs(
+    title = "Pass Outcomes Distribution",
+    fill = "Outcome"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.title = element_text(face = "bold")
+  )
+```
+
+```{r}
+#| label: check-columns
+#| echo: false
+
+###############################################################
+# Check amount of non-missing values in each variable (column)
+###############################################################
+props <- c()
+
+for (col in 1:ncol(openplay_single)) {
+  props[col] <- ((sum(!is.na(openplay_single[,col])))/(nrow(openplay_single)))*100
+}
+
+col_counts <- data.frame(colname = colnames(openplay_single), percentage = props)
+col_counts[order(col_counts$percentage),]
+
+# Keep columns with 95% of data available
+cols_to_keep <- col_counts$colname[col_counts$percentage >= 95]
+openplay <- open_play_passes %>% 
+  select(all_of(cols_to_keep))
+
+# Some columns still have NULL only values
+cols_to_drop <- c("tactics.lineup","carry.end_location", "shot.end_location", "shot.freeze_frame", "goalkeeper.end_location")
+openplay <- openplay %>% 
+  select(-cols_to_drop)
+
+###########################
+# Investigate pass outcome
+###########################
+
+uniq_outcomes <- unique(openplay_single$pass.outcome.name)
+outcome_count <- c()
+
+for (type in 1:length(uniq_outcomes)) {
+  outcome_count[type] <- pass_single %>% filter(pass.outcome.name == uniq_outcomes[type]) %>% summarise(n = n()) %>% pull(n)
+}
+
+outcome_counts <- data.frame(colname = uniq_outcomes, count = outcome_count)
+outcome_counts$count[1] = sum(is.na(pass_single$pass.outcome.name))
+# TABLE OF OUTCOME DISTRIBUTION
+outcome_counts[order(outcome_counts$count),]
+barplot(outcome_counts$count, names.arg = outcome_counts$colname)
+
+#####################################
+# Change NA pass outcome to complete
+#####################################
+
+open_play_passes <- open_play_passes %>%
+ mutate(pass.outcome.name = replace_na(pass.outcome.name, "Complete"))
+
+openplay_single <- openplay_single %>%
+ mutate(pass.outcome.name = replace_na(pass.outcome.name, "Complete"))
+
+##########################################
+# Update pass outcome in total and singles
+##########################################
+
+uniq_outcomes <- unique(openplay_single$pass.outcome.name)
+outcome_count <- c()
+
+for (type in 1:length(uniq_outcomes)) {
+  outcome_count[type] <- pass_single %>% filter(pass.outcome.name == uniq_outcomes[type]) %>% summarise(n = n()) %>% pull(n)
+}
+
+outcome_counts <- data.frame(colname = uniq_outcomes, count = outcome_count)
+outcome_counts$count[1] = sum(is.na(pass_single$pass.outcome.name))
+# TABLE OF OUTCOME DISTRIBUTION
+outcome_counts[order(outcome_counts$count),]
+barplot(outcome_counts$count, names.arg = outcome_counts$colname, main = "Distribution of Pass Outcomes", ylab = "Count")
+```
+
+### Distribution of Pass Angles
+
+-   Segmented into different games and different league
+
+#### Open Play
+
+```{r}
+hist(openplay_single$pass.angle, main = "Pass Angle Distribution", xlab = "Angle (radians)")
+
+ggplot(openplay_single, aes(x = pass.angle, fill = interaction(competition_name, season_name))) +
+  geom_histogram(
+    binwidth = 0.2, 
+    color = "white", 
+    alpha = 0.85,
+  ) +
+  scale_x_continuous(
+    breaks = c(-pi, -pi/2, 0, pi/2, pi),
+    labels = c("-π", "-π/2", "0", "π/2", "π"),
+    limits = c(-3.2, 3.2)
+  ) +
+ labs(
+    title = "Pass Angle Distribution by Competition & Season (Open Play)",
+    x = "Angle (radians)",
+    y = "Count"
+  )+
+  facet_wrap(~ competition_name + season_name, ncol = 3) +
+  theme(legend.position = "none")
+```
+
+#### All Passes
+
+```{r}
+library(gghighlight)
+ggplot(pass_single, aes(x = pass.angle, fill = interaction(competition_name, season_name))) +
+  geom_histogram(
+    binwidth = 0.2, 
+    color = "white", 
+    alpha = 0.85
+  ) +
+  scale_x_continuous(
+    breaks = c(-pi, -pi/2, 0, pi/2, pi),
+    labels = c("-π", "-π/2", "0", "π/2", "π"),
+    limits = c(-3.2, 3.2)
+  ) + 
+  scale_fill_discrete(
+    name = "Competition and Season Name",                                
+  ) +
+ labs(
+    title = "Pass Angle Distribution by Competition & Season",
+    x = "Angle (radians)",
+    y = "Count"
+  )
+```
+
+### Distribution of Pass Lengths
+
+-   Segmented into different games and different leagues
+
+#### Open Play
+
+```{r}
+
+ggplot(openplay_single, aes(x = pass.length, fill = interaction(competition_name, season_name))) +
+  geom_histogram(
+    binwidth = 2, 
+    color = "white", 
+    alpha = 0.85
+  ) +
+  scale_fill_discrete(
+    name = "Competition and Season Name",                                
+  ) +
+ labs(
+    title = "Pass Length Distribution by Competition & Season (Open Play)",
+    x = "Length (yards)",
+    y = "Count"
+  ) +
+  facet_wrap(~ competition_name + season_name, ncol = 3) +
+  theme(legend.position = "none")
+```
+
+#### All Passes
+
+```{r}
+ggplot(pass_single, aes(x = pass.length, fill = interaction(competition_name, season_name))) +
+  geom_histogram(
+    binwidth = 2, 
+    color = "white", 
+    alpha = 0.85
+  ) +
+  scale_fill_discrete(
+    name = "Competition and Season Name",                                
+  ) +
+ labs(
+    title = "Pass Length Distribution by Competition & Season",
+    x = "Length (metres)",
+    y = "Count"
+  )
+```
+
+## Freeze Frames
+
+## Line graphs
+
+### Relationship between passes and goals scored
+
+### Pass completion as function of length and angle
+
+## Pass Completion vs Length
+
+### Using all labels for pass outcome
+
+```{r}
+plot_data <- pass_single %>%
+  mutate(outcome = ifelse(is.na(pass.outcome.name), "Complete", pass.outcome.name))
+
+ggplot(plot_data, aes(x = pass.angle, y = pass.length, color = outcome)) +
+  geom_point(alpha = 0.6, size = 1.5) +  # Alpha helps see overlapping data points
+  scale_x_continuous(
+    breaks = c(-pi, -pi/2, 0, pi/2, pi),
+    labels = c("-π", "-π/2", "0", "π/2", "π"),
+    limits = c(-3.2, 3.2)
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Pass Length vs. Pass Angle",
+    x = "Pass Angle (radians)",
+    y = "Pass Length (metres)",
+    color = "Pass Outcome" # Fixes the legend title
+  ) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold")
+  )
+```
+
+### Using complete and incomplete as labels
+
+```{r}
+plot_data <- pass_single %>%
+  mutate(outcome = ifelse(is.na(pass.outcome.name), "Complete", "Incomplete"))
+
+ggplot(plot_data, aes(x = pass.angle, y = pass.length, color = outcome)) +
+  geom_point(alpha = 0.6, size = 1.5) + 
+  scale_x_continuous(
+    breaks = c(-pi, -pi/2, 0, pi/2, pi),
+    labels = c("-π", "-π/2", "0", "π/2", "π"),
+    limits = c(-3.2, 3.2)
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Pass Length vs. Pass Angle",
+    x = "Pass Angle (radians)",
+    y = "Pass Length (yards)",
+    color = "Pass Outcome"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold")
+  )
+```
+
+## Pass Completion compared to position on the field
+
+```{r}
+plot_data <- pass_single %>%
+  mutate(outcome = ifelse(is.na(pass.outcome.name), "Complete", "Incomplete"))
+
+ggplot(plot_data, aes(x = players_x, y = players_y, color = outcome)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    limits = TRUE,
+    alpha = 1
+  ) +
+  geom_point(alpha = 0.6, size = 0.8) + 
+  theme_minimal() +
+  labs(
+    title = "Pass outcome vs position on the pitch",
+    color = "Pass Outcome"
+  ) +
+  theme_pitch()
+```
+
+### World Cup 2022
+
+```{r}
+plot_data <- wc_2022 %>%
+  mutate(outcome = ifelse(is.na(pass.outcome.name), "Complete", "Incomplete"))
+
+ggplot(plot_data, aes(x = players_x, y = players_y, color = outcome)) +
+  annotate_pitch(
+    dimensions = pitch_statsbomb,
+    limits = TRUE,
+    alpha = 1
+  ) +
+  geom_point(alpha = 0.6, size = 0.8) + 
+  theme_minimal() +
+  labs(
+    title = "Pass outcome vs position on the pitch (Men's World Cup 2022)",
+    color = "Pass Outcome"
+  ) +
+  theme_pitch()
+
+```
+
+# Voronoi Diagram
+
+```{r}
+library(ggvoronoi)
+library(groupdata2)
+library(dplyr)
+```
+
+# Pass Sonar
+
+-   Way of visualising pass direction and distance
+
+-   Polar histogram
+
+-   Length of bars indicate normalized pass frequency for each angle bin, color represents distance from each segment
+
+-   Code credited to
+
+```{r}
+#| fig-width: 8
+#| fig-height: 8
+#| fig-asp: 1
+#| out-width: "80%"
+devtools::install_github("abhiamishra/ggshakeR")
+
+library(ggshakeR)
+
+bund_2324_cleaned <- bund_2324 |> 
+  rename(
+    x = ball_x,
+    y = ball_y,
+    finalX = pass_end_x,
+    finalY = pass_end_y
+  ) |> filter(position_group == "Goalkeeper")
+
+
+plot_sonar(bund_2324_cleaned, data_type = "statsbomb", title = "Pass Sonar for Goalkeeprs")
+
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# 1. Prepare and bin pass data
+sonar_data <- bund_2324_cleaned %>%
+  mutate(
+    # Calculate pass angle in radians/degrees
+    angle_rad = atan2(finalY - y, finalX - x),
+    angle_deg = (angle_rad * 180 / pi) %% 360,
+    
+    # Bin angles into 15-degree directional slices
+    angle_bin = cut(angle_deg, breaks = seq(0, 360, by = 15), include.lowest = TRUE)
+  ) %>%
+  group_by(angle_bin) %>%
+  summarise(
+    total_passes = n(),
+    successful_passes = sum(pass.outcome.name == "Complete", na.rm = TRUE),
+    unsuccessful_passes = sum(pass.outcome.name != "Complete", na.rm = TRUE),
+    avg_distance = mean(pass.length[pass.outcome.name == "Complete"], na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 2. Reshape into stacked format for successful vs. unsuccessful passes
+sonar_stacked <- sonar_data %>%
+  pivot_longer(
+    cols = c(successful_passes, unsuccessful_passes),
+    names_to = "pass_type",
+    values_to = "count"
+  )
+
+# 3. Plot using built-in ggplot2 continuous viridis scale
+ggplot(sonar_stacked, aes(x = angle_bin, y = count, fill = avg_distance)) +
+  geom_col(position = "stack", color = "#222222", linewidth = 0.2) +
+  # Native ggplot2 function — no separate package required
+  scale_fill_viridis_c(
+    option = "magma",
+    name = "Average distance (yards)",
+    na.value = "#555555" # Grey for unsuccessful pass segments
+  ) +
+  coord_polar(start = 0) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid.major = element_line(color = "grey80", linetype = "dashed"),
+    plot.background = element_rect(fill = "#F9F8F3", color = NA),
+    panel.background = element_rect(fill = "#F9F8F3", color = NA)
+  ) +
+  labs(
+    title = "Pass Sonar",
+    x = NULL,
+    y = NULL
+  )
+```
+
+```{r}
+library(tidyverse)
+library(viridis)
+
+round.angle=15
+
+#Round angle to nearest 15 degrees 
+bund_2324 = bund_2324 %>% mutate(angle.round=round(pass.angle*180/pi/round.angle)*round.angle)
+
+#create data frame for sonars per player and team for a season
+#this normalizes the most frequent pass angle to 1 and all other angles relative to that angle
+#it also associates pass distance with each angle, but this can be changed to anything
+#such as pass success or any other metric
+library(tidyverse)
+
+sonar <- bund_2324 %>%
+  group_by(player.id, team.name) %>%
+  mutate(N = n()) %>%
+  group_by(angle.round, .add = TRUE) %>%
+  mutate(n.angle = n() / N) %>%
+  group_by(player.id, team.name) %>%
+  mutate(
+    maxN = max(n.angle),
+    angle.norm = n.angle / maxN
+  ) %>%
+  group_by(player.id, team.name, N, angle.round) %>%
+  summarize(
+    angle.norm = mean(angle.norm),
+    distance = mean(pass.length, na.rm = TRUE),
+    distance = pmin(distance, 30),
+    .groups = "drop"
+  )
+
+
+# Get unique player IDs
+players <- unique(sonar$player.id)
+
+# Select player index (e.g., 57th player in your list)
+idx <- 57
+target_id <- players[idx]
+
+# Plot
+ggplot(sonar %>% filter(player.id == target_id)) +
+  geom_bar(
+    aes(x = angle.round, y = angle.norm, fill = distance), 
+    stat = "identity",
+    width = 15 # Adjust to match your angle bin width
+  ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_x_continuous(
+    breaks = seq(-180, 180, by = 90), 
+    limits = c(-180, 180)
+  ) +
+  coord_polar(start = pi, direction = 1) +
+  scale_fill_viridis_c("Distance (yards)", limits = c(0, 30), na.value = "#FDE725FF") +
+  labs(
+    x = NULL, 
+    y = NULL, 
+    title = paste("Player ID:", target_id)
+  ) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA)
+  )
+
+#Plotting on top of a field by a team's formation
+#The trick is to save each players PassSonar as a grob into a list. Then using
+#annotation_custom() each PassSonar is placed in the correct position on the pitch
+#It takes some trial and error to get the PassSonars into the correct position
+
+text_color="black"
+background_color="white"
+radar.size=27
+ymax=80
+xmax=120
+
+team.select="North Carolina Courage"
+match.select=7444
+
+game.lineup=StatsBombData%>%filter(team.name==team.select, type.name=='Starting XI', match_id==match.select )
+game.players=game.lineup$tactics.lineup[[1]][["player.name"]]
+team.formation= parse_number( game.lineup$tactics.formation)
+#game.lineup$tactics.lineup[[1]][["position.name"]]  #uncomment to view positions to help place into correct locations of field
+
+player.plots=list()
+for (i in 1:length(game.players)){
+  
+  plot.data=sonar%>%filter(team.name==team.select & player.name==game.players[i])
+  
+  player.plots[[i]]=ggplot(plot.data)+geom_bar(aes(x=angle.round, y=angle.norm, fill=distance), stat="identity")+
+    scale_y_continuous(limits=c(0,1))+
+    scale_x_continuous(breaks=seq(-180,180, by=90), limits=c(-180,180))+
+    coord_polar(start=pi, direction=1)+
+    scale_fill_viridis("Distance (yards)", limits=c(0,30), na.value="#FDE725FF")+
+    labs(x='', y='',title=plot.data$player.name[1])+
+    theme_void()+
+    theme(plot.title = element_text(hjust=0.5, color=text_color),
+          plot.background = element_rect(fill = "transparent",colour = NA),
+          panel.background = element_rect(fill = "transparent",colour = NA),
+          legend.position = "none")
+  player.plots[[i]]=ggplotGrob(player.plots[[i]])
+  
+  if (i==length(game.players)){
+    colorbar=
+      ggplot(plot.data)+geom_bar(aes(x=angle.round, y=angle.norm, fill=distance), stat="identity")+
+      scale_y_continuous(limits=c(0,0))+
+      scale_fill_viridis("", limits=c(0,30), na.value="#FDE725FF")+
+      labs(x='', y='')+
+      theme_void()+
+      theme( legend.position = "bottom",
+             plot.background = element_rect(fill = "transparent",colour = NA),
+             panel.background = element_rect(fill = "transparent",colour = NA))
+    colorbar=ggplotGrob(colorbar)
+  }
+}
+
+#this is a 4-4-2 example. Use similar methods for other formations
+
+if (team.formation==442){
+  team.formation='4-4-2'
+  
+  back.line=20
+  mid.line=48
+  forward.line=77
+  p=createPitch(grass_colour = background_color,goal_colour=text_colour, line_colour = text.color)+coord_flip(ylim=c(0,80))+
+    theme(aspect.ratio = 120/80, plot.title = element_text(size=18, hjust=0.5, vjust=-2, color=text.color),
+          plot.background = element_rect(fill = background_color,colour = NA),
+          panel.background = element_rect(fill = background_color,colour = NA))+
+    annotation_custom(grob=player.plots[[1]], xmin=-9, xmax=-9+radar.size, ymax=ymax/2+radar.size/2-1.5, y=ymax/2-radar.size/2-1.5)+ #GK
+    annotation_custom(grob=player.plots[[2]], xmin=back.line+3, xmax=back.line+3+radar.size, ymax=ymax+1, y=ymax-radar.size+1)+ #RB
+    annotation_custom(grob=player.plots[[5]], xmin=back.line+3, xmax=back.line+3+radar.size, ymax=-3+radar.size, y=-3)+ #LB
+    annotation_custom(grob=player.plots[[4]], xmin=back.line, xmax=back.line+radar.size, ymax=ymax/2-23.5+radar.size, y=ymax/2-23.5)+ #LCB
+    annotation_custom(grob=player.plots[[3]], xmin=back.line, xmax=back.line+radar.size, ymax=ymax/2-6+radar.size, y=ymax/2-6)+ #RCB
+    annotation_custom(grob=player.plots[[7]], xmin=mid.line, xmax=mid.line+radar.size, ymax=ymax/2-23.5+radar.size, y=ymax/2-23.5)+ #LCM
+    annotation_custom(grob=player.plots[[6]], xmin=mid.line, xmax=mid.line+radar.size, ymax=ymax/2-6+radar.size, y=ymax/2-6)+ #RCM
+    annotation_custom(grob=player.plots[[10]], xmin=forward.line, xmax=forward.line+radar.size, ymax=ymax/2-3+radar.size, y=ymax/2-3)+ #RF
+    annotation_custom(grob=player.plots[[11]], xmin=forward.line, xmax=forward.line+radar.size, ymax=ymax/2-26+radar.size, y=ymax/2-26)+ #LF
+    annotation_custom(grob=player.plots[[8]], xmin=mid.line+5, xmax=mid.line+5+radar.size, ymax=ymax+1, y=ymax-radar.size+1)+ #RM
+    annotation_custom(grob=player.plots[[9]], xmin=mid.line+5, xmax=mid.line+5+radar.size, ymax=-3+radar.size, y=-3)+ #LM
+    annotation_custom(grob=colorbar, xmin=3, xmax=7, ymin=1, ymax=18)+
+    annotate("text", label="concept:@etmckinley\ndata:@StatsBomb", x=6, y=79, hjust=1,vjust=1 ,size=3.75, color=text.color)+
+    annotate("text", label="Mean Pass Distance (Yards)", x=9, y=3, hjust=0, size=3, color=text.color)+
+    annotate("text", label='Bar length = normalized pass angle frequency; Bar color = mean pass distance', color=text.color, x=-2, y=79, hjust=1, size=3)+
+    annotate("text", label=paste0('Starting Formation: ', team.formation), color=text.color, x=-2, y=0, hjust=0, size=5, fontface="bold")+
+    annotate("text", label=paste0('PassSonar: ', team.select), color=text.color, x=121.5, y=0, hjust=0, size=9, fontface="bold")+
+    guides(fill = guide_colourbar())
+  
+}
+
+ggsave(p, file=paste0('./', team.select,' PassSonar.png'), width=9.5, height=11.5, dpi=150, bg=background_color )
+
+
+```
+
+### Voronoi Diagrams
+
+```{r}
+# #| label: Voronoi Diagrams
+# library(deldir)
+# library(sf)
+# 
+# testframe = head(open_play_passes,16) # Test frame
+# 
+# library(deldir)
+# library(sf)
+# library(purrr)
+# 
+# get_visible_voronoi_areas <- function(player_positions, visible_area_vec) {
+#   va_coords <- matrix(visible_area_vec, ncol = 2, byrow = TRUE)
+# 
+#   vor <- deldir(player_positions$x, player_positions$y, rw = c(0, 120, 0, 80))
+#   tiles <- tile.list(vor)
+# 
+#   cell_polys <- lapply(tiles, function(t) {
+#     coords <- cbind(t$x, t$y)
+#     coords <- rbind(coords, coords[1, ])
+#     st_polygon(list(coords))
+#   })
+#   cell_sf <- st_sf(player_id = seq_along(cell_polys),
+#                     geometry = st_sfc(cell_polys))
+# 
+#   va_closed <- rbind(va_coords, va_coords[1, ])
+#   visible_poly <- st_sfc(st_polygon(list(va_closed)))
+# 
+#   clipped <- st_intersection(cell_sf, st_sf(geometry = visible_poly))
+#   clipped$area <- st_area(clipped)
+#   clipped
+# }
+# 
+# result <- get_visible_voronoi_areas(
+#   player_positions = data.frame(x = testframe$players_x, y = testframe$players_y),
+#   visible_area_vec = testframe$visible_area[[1]]   # any row works, they're all identical
+# )
+# 
+# result
+# 
+# library(ggplot2)
+# library(ggsoccer)
+# 
+# # add team/player info back for coloring
+# result$teammate <- testframe$teammate
+# result$actor <- testframe$actor
+# 
+# ggplot() +
+#   annotate_pitch(dimensions = pitch_statsbomb, colour = "white", fill = "#1c6b3c") +
+#   geom_sf(data = result, aes(fill = teammate), colour = "black", alpha = 0.5, inherit.aes = FALSE) +
+#   geom_point(data = testframe, 
+#              aes(x = players_x, y = players_y, colour = teammate), 
+#              size = 4) +
+#   geom_point(data = subset(testframe, actor == TRUE),
+#              aes(x = players_x, y = players_y),
+#              shape = 21, size = 7, stroke = 1.5, colour = "gold", fill = NA) + 
+#   scale_fill_manual(values = c("TRUE" = "blue", "FALSE" = "red")) +
+#   scale_colour_manual(values = c("TRUE" = "darkblue", "FALSE" = "darkred")) +
+#   theme_pitch() +
+#   coord_sf() +
+#   labs(title = "Voronoi cells clipped to visible area")
+```
+
+```{r}
+
+```
+
+# Appendix
+
+## Full Data Description
+
+## Number of passes by position, season and competion
+
+```{r}
+
+```
